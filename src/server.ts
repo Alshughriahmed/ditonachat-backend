@@ -1,40 +1,33 @@
-import Fastify from 'fastify';
+import fastify from 'fastify';
 import { Server } from 'socket.io';
-import 'dotenv/config';
+import cors from '@fastify/cors';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
+const app = fastify({ logger: true });
 
-const app = Fastify({
-  logger: true
+app.register(cors, {
+  origin: "https://ditonachat-new-g43w.vercel.app",
+  methods: ["GET", "POST"],
 });
+
+// --- NEW HEALTH CHECK ROUTE ---
+app.get('/', async (request, reply) => {
+  return { status: 'ok', message: 'DitonaChat backend is running' };
+});
+// --- END OF NEW ROUTE ---
 
 const io = new Server(app.server, {
-  path: '/ws',
-cors: {
-  origin: [
-    "https://ditonachat-frontend.vercel.app",
-    "http://localhost:3000"
-  ],
-  methods: ["GET", "POST"]
-}
-
+  cors: {
+    origin: "https://ditonachat-new-g43w.vercel.app",
+    methods: ["GET", "POST"],
+  }
 });
 
-io.on('connection', (socket) => {
-  console.log(`✅ مستخدم جديد اتصل بالخادم: ${socket.id}`);
+// ... rest of the Socket.IO logic ...
 
-  socket.on('disconnect', () => {
-    console.log(`❌ انقطع اتصال المستخدم: ${socket.id}`);
-  });
-});
-
-const start = async () => {
-  try {
-    await app.listen({ port: PORT, host: '0.0.0.0' });
-  } catch (err) {
+app.listen({ port: PORT, host: '0.0.0.0' }, (err) => {
+  if (err) {
     app.log.error(err);
     process.exit(1);
   }
-};
-
-start();
+});
