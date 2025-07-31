@@ -41,18 +41,22 @@ io.on("connection", (socket) => {
     const partnerId = (socket as any).partnerId;
     if (partnerId) io.to(partnerId).emit("offer", offer);
   });
+
   socket.on("answer", (answer) => {
     const partnerId = (socket as any).partnerId;
     if (partnerId) io.to(partnerId).emit("answer", answer);
   });
+
   socket.on("ice-candidate", (candidate) => {
     const partnerId = (socket as any).partnerId;
     if (partnerId) io.to(partnerId).emit("ice-candidate", candidate);
   });
+
   socket.on("chat-message", (message: string) => {
     const partnerId = (socket as any).partnerId;
     if (partnerId) io.to(partnerId).emit("chat-message", message);
   });
+
   socket.on("disconnect", () => {
     const partnerId = (socket as any).partnerId;
     if (waitingSocket && waitingSocket.id === socket.id) waitingSocket = null;
