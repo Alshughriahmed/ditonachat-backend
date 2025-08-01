@@ -47,4 +47,6 @@ io.on("connection", (socket) => {
 });
 
 const PORT = Number(process.env.PORT) || 3001;
-app.listen({ port: PORT, host: "0.0.0.0" });
+server.listen(PORT, () => {
+  console.log(`🚀 Server listening on port ${PORT}`);
+});
