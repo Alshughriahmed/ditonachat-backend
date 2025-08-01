@@ -1,52 +1,36 @@
-import fastify from "fastify";
-import { Server as SocketIOServer } from "socket.io";
-import cors from "@fastify/cors";
+// src/server.ts
 
-const app = fastify({ logger: true });
+import express from 'express';
+import http from 'http';
+import { Server as IoServer } from 'socket.io';
+import pino from 'pino';
 
-app.register(cors, {
-  origin: "*", // Loosened for debugging, can be tightened later
-});
+const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
+const app = express();
 
-const io = new SocketIOServer(app.server, {
+// هنا نعرّف server قبل استخدامه
+const server = http.createServer(app);
+
+const io = new IoServer(server, {
+  path: '/ws',
   cors: {
-    origin: "*",
+    origin: ['https://ditonachat-new.vercel.app'],
+    methods: ['GET', 'POST'],
   },
 });
 
-let waitingUser: string | null = null;
-
-io.on("connection", (socket) => {
-  socket.on("ready", () => {
-    if (waitingUser) {
-      io.to(waitingUser).emit("partner", { partnerId: socket.id, isInitiator: true });
-      socket.emit("partner", { partnerId: waitingUser, isInitiator: false });
-      waitingUser = null;
-    } else {
-      waitingUser = socket.id;
-    }
-  });
-
-  socket.on("offer", ({ target, offer }) => {
-    io.to(target).emit("offer", { from: socket.id, offer });
-  });
-
-  socket.on("answer", ({ target, answer }) => {
-    io.to(target).emit("answer", { from: socket.id, answer });
-  });
-
-  socket.on("ice-candidate", ({ target, candidate }) => {
-    io.to(target).emit("ice-candidate", candidate);
-  });
-
-  socket.on("disconnect", () => {
-    if (waitingUser === socket.id) {
-      waitingUser = null;
-    }
-  });
+io.on('connection', socket => {
+  logger.info(`🔌 New WS client: ${socket.id}`);
+  socket.on('ready', () => socket.broadcast.emit('partner', { isInitiator: false }));
+  socket.on('offer', offer => socket.broadcast.emit('offer', offer));
+  socket.on('answer', ans => socket.broadcast.emit('answer', ans));
+  socket.on('ice-candidate', cand => socket.broadcast.emit('ice-candidate', cand));
+  socket.on('disconnect', reason => logger.warn(`❌ Disconnected ${socket.id}: ${reason}`));
 });
+
+app.get('/healthz', (_req, res) => res.sendStatus(200));
 
 const PORT = Number(process.env.PORT) || 3001;
 server.listen(PORT, () => {
-  console.log(`🚀 Server listening on port ${PORT}`);
+  logger.info(`🚀 Server listening on port ${PORT}`);
 });
