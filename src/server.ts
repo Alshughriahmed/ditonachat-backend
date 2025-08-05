@@ -1,70 +1,145 @@
-// src/server.ts
-
-import express from 'express';
-import http from 'http';
+import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
+import fastify from 'fastify';
+import fastifyCors from '@fastify/cors';
 import { Server as IoServer } from 'socket.io';
-import pino from 'pino';
 
-// Logger
-const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
+// --- Load env ---
+const PORT            = Number(process.env.PORT || 443);
+const CERT_PATH       = process.env.CERT_PATH!;
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN!;
 
-// إنشاء تطبيق Express
-const app = express();
+// --- HTTPS certs ---
+const httpsOptions = {
+  key:  fs.readFileSync(path.join(CERT_PATH, 'privkey.pem')),
+  cert: fs.readFileSync(path.join(CERT_PATH, 'fullchain.pem'))
+};
 
-// Health-check لتجنّب سبات الحاوية
-app.get('/healthz', (_req, res) => res.sendStatus(200));
+// --- Fastify instance over HTTPS ---
+const app = fastify({ https: httpsOptions });
 
-// إنشاء خادم HTTP من Express
-const server = http.createServer(app);
-
-// تهيئة Socket.io على نفس الخادم، مع المسار /ws وCORS
-const io = new IoServer(server, {
-  path: '/ws',
-  cors: {
-    origin: [
-      'https://ditonachat-new.vercel.app',
-      'https://ditonachat-frontend.vercel.app',
-    ],
-    methods: ['GET', 'POST'],
-  },
+// --- CORS setup ---
+await app.register(fastifyCors, {
+  origin: FRONTEND_ORIGIN
 });
 
-// منطق WebSocket: انتظار شريك، تمرير offer/answer/ICE
-let waitingUser: string | null = null;
+// --- Health check ---
+app.get('/health', async () => ({ status: 'ok' }));
 
-io.on('connection', (socket) => {
-  logger.info(`🔌 WS client connected: ${socket.id}`);
+// --- Socket.IO over the same server ---
+const io = new IoServer(app.server, {
+  path: '/ws',
+  cors: {
+    origin: FRONTEND_ORIGIN,
+    methods: ['GET','POST']
+  }
+});
 
-  socket.on('ready', () => {
-    if (waitingUser) {
-      io.to(waitingUser).emit('partner', { isInitiator: true, partnerId: socket.id });
-      socket.emit('partner',     { isInitiator: false, partnerId: waitingUser });
-      waitingUser = null;
+// --- User matching types and state ---
+interface UserData {
+  id: string;
+  isVIP: boolean;
+  gender: string;
+  country: string;
+  interests: string[];
+}
+
+const waitingUsers: UserData[]     = [];
+const userPairs   = new Map<string,string>();
+
+function findMatch(user: UserData): string | null {
+  if (user.isVIP) {
+    let m = waitingUsers.find(w => w.isVIP && w.gender===user.gender && w.country===user.country);
+    if (m) return m.id;
+    m = waitingUsers.find(w => w.gender===user.gender);
+    if (m) return m.id;
+    m = waitingUsers.find(w => w.gender==='paar');
+    if (m) return m.id;
+    m = waitingUsers.find(w=> w.interests.some(i=>user.interests.includes(i)));
+    if (m) return m.id;
+  }
+  if (!user.isVIP) {
+    const m = waitingUsers.find(w=> !w.isVIP && w.country===user.country);
+    if (m) return m.id;
+  }
+  if (waitingUsers.length) {
+    const rnd = waitingUsers[Math.floor(Math.random()*waitingUsers.length)];
+    return rnd.id;
+  }
+  return null;
+}
+
+// --- Socket handlers ---
+io.on('connection', socket => {
+  console.log(`🔌 Connected: ${socket.id}`);
+
+  let me: UserData = {
+    id: socket.id,
+    isVIP: false,
+    gender: 'male',
+    country: 'DE',
+    interests: []
+  };
+
+  // join queue (client must emit this)
+  socket.on('join-queue', (data: Partial<UserData>) => {
+    me = { ...me, ...data, id: socket.id };
+    const partner = findMatch(me);
+    if (partner) {
+      // remove partner from waiting
+      const idx = waitingUsers.findIndex(u=>u.id===partner);
+      if (idx>=0) waitingUsers.splice(idx,1);
+      // pair
+      userPairs.set(me.id, partner);
+      userPairs.set(partner, me.id);
+      io.to(me.id).emit('partner-found', partner);
+      io.to(partner).emit('partner-found', me.id);
+      console.log(`✅ Paired ${me.id} ↔ ${partner}`);
     } else {
-      waitingUser = socket.id;
+      waitingUsers.push(me);
+      console.log(`⏳ Queued ${me.id} (waiting: ${waitingUsers.length})`);
     }
   });
 
-  socket.on('offer', ({ target, offer }) => {
-    io.to(target).emit('offer', { from: socket.id, offer });
+  // next-partner
+  socket.on('next-partner', () => {
+    const cur = userPairs.get(socket.id);
+    if (cur) {
+      io.to(cur).emit('partner-disconnected');
+      userPairs.delete(cur);
+      userPairs.delete(socket.id);
+    }
+    waitingUsers.push(me);
+    console.log(`🔄 ${socket.id} looking for next`);
   });
 
-  socket.on('answer', ({ target, answer }) => {
-    io.to(target).emit('answer', { from: socket.id, answer });
+  // relay signaling
+  socket.on('signal', payload => {
+    const peer = userPairs.get(socket.id);
+    if (peer) io.to(peer).emit('signal', payload);
   });
 
-  socket.on('ice-candidate', ({ target, candidate }) => {
-    io.to(target).emit('ice-candidate', candidate);
-  });
-
-  socket.on('disconnect', (reason) => {
-    logger.warn(`❌ WS client disconnected (${socket.id}): ${reason}`);
-    if (waitingUser === socket.id) waitingUser = null;
+  // disconnect cleanup
+  socket.on('disconnect', () => {
+    console.log(`❌ Disconnected: ${socket.id}`);
+    const idx = waitingUsers.findIndex(u=>u.id===socket.id);
+    if (idx>=0) waitingUsers.splice(idx,1);
+    const peer = userPairs.get(socket.id);
+    if (peer) {
+      io.to(peer).emit('partner-disconnected');
+      userPairs.delete(peer);
+      userPairs.delete(socket.id);
+    }
   });
 });
 
-// استمع على المنفذ الديناميكي من Render
-const PORT = Number(process.env.PORT) || 3001;
-server.listen(PORT, () => {
-  logger.info(`🚀 Server listening on port ${PORT}`);
-});
+// --- Start server ---
+app.listen({ port: PORT, host: '0.0.0.0' })
+  .then(() => {
+    console.log(`🚀 HTTPS server listening on https://0.0.0.0:${PORT}`);
+  })
+  .catch(err => {
+    app.log.error(err);
+    process.exit(1);
+  });

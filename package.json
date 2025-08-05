@@ -2,20 +2,19 @@
   "name": "ditonachat-backend",
   "version": "1.0.0",
   "type": "module",
-  "scripts": {
-    "build": "tsc",
-    "start": "node dist/server.js",
-    "dev": "ts-node-dev src/server.ts"
+"scripts": {
+  "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+  "build": "tsc",
+  "start": "node --experimental-json-modules dist/server.js"
   },
   "dependencies": {
     "@fastify/cors": "^8.2.1",
-    "express": "^5.1.0",
+    "dotenv": "^17.2.1",
     "fastify": "^4.26.1",
     "pino": "^9.7.0",
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
-    "@types/express": "^5.0.3",
     "@types/node": "^24.1.0",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
